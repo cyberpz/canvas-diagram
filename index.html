@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Canvas Diagram — Interactive Architecture Editor</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; overflow:hidden; height:100vh; color:#e2e8f0; }
+#toolbar {
+  position:fixed; top:0; left:0; right:0; z-index:100;
+  background:rgba(2,6,23,0.92); border-bottom:1px solid #1e293b;
+  backdrop-filter:blur(8px);
+  display:flex; align-items:center; gap:0.5rem; padding:0.5rem 1rem;
+}
+#toolbar h1 { font-size:0.875rem; font-weight:700; color:#22d3ee; margin-right:0.5rem; flex-shrink:0; }
+.sep { width:1px; height:24px; background:#1e293b; margin:0 0.25rem; }
+.btn {
+  font-family:inherit; font-size:0.7rem; padding:0.375rem 0.75rem;
+  border-radius:0.375rem; border:1px solid #1e293b; cursor:pointer;
+  background:rgba(30,41,59,0.5); color:#94a3b8;
+  transition:all 0.15s; white-space:nowrap;
+}
+.btn:hover { background:rgba(30,41,59,0.9); color:#e2e8f0; border-color:#334155; }
+.btn.active { background:rgba(34,211,238,0.15); color:#22d3ee; border-color:#22d3ee; }
+.btn.danger { background:rgba(251,113,133,0.1); color:#fb7185; border-color:rgba(251,113,133,0.3); }
+.btn.save { background:rgba(52,211,153,0.1); color:#34d399; border-color:rgba(52,211,153,0.3); }
+.btn.save:hover { background:rgba(52,211,153,0.2); }
+#status { margin-left:auto; font-size:0.65rem; color:#475569; }
+#canvas { display:block; cursor:default; margin-top:41px; }
+#modal-overlay {
+  display:none; position:fixed; inset:0; z-index:200;
+  background:rgba(0,0,0,0.7); backdrop-filter:blur(4px);
+  align-items:center; justify-content:center;
+}
+#modal-overlay.open { display:flex; }
+#modal {
+  background:#0f172a; border:1px solid #1e293b; border-radius:0.75rem;
+  padding:1.5rem; min-width:320px; max-width:420px; width:100%;
+}
+#modal h2 { font-size:0.875rem; font-weight:600; margin-bottom:1rem; color:#e2e8f0; }
+.field { margin-bottom:0.875rem; }
+.field label { display:block; font-size:0.65rem; color:#64748b; margin-bottom:0.375rem; letter-spacing:0.05em; text-transform:uppercase; }
+.field input, .field textarea {
+  width:100%; font-family:inherit; font-size:0.75rem;
+  background:#020617; border:1px solid #1e293b; border-radius:0.375rem;
+  color:#e2e8f0; padding:0.5rem 0.75rem;
+}
+.field textarea { resize:vertical; min-height:60px; }
+.field input:focus, .field textarea:focus { outline:none; border-color:#334155; }
+.color-row { display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.25rem; }
+.color-swatch { width:24px; height:24px; border-radius:4px; cursor:pointer; border:2px solid transparent; transition:border-color 0.1s; }
+.color-swatch.selected { border-color:#fff; }
+.modal-actions { display:flex; gap:0.5rem; justify-content:flex-end; margin-top:1rem; }
+#ctx-menu {
+  display:none; position:fixed; z-index:300;
+  background:#0f172a; border:1px solid #1e293b; border-radius:0.5rem;
+  padding:0.25rem; min-width:140px;
+}
+#ctx-menu.open { display:block; }
+.ctx-item {
+  font-family:inherit; font-size:0.7rem; padding:0.375rem 0.75rem;
+  cursor:pointer; border-radius:0.25rem; color:#94a3b8;
+  display:block; width:100%; text-align:left; background:none; border:none;
+}
+.ctx-item:hover { background:rgba(30,41,59,0.8); color:#e2e8f0; }
+.ctx-item.red { color:#fb7185; }
+.ctx-item.red:hover { background:rgba(251,113,133,0.1); }
+#toast {
+  position:fixed; bottom:1.5rem; left:50%; transform:translateX(-50%);
+  background:#0f172a; border:1px solid #1e293b; border-radius:0.5rem;
+  padding:0.5rem 1rem; font-size:0.7rem; color:#34d399;
+  opacity:0; pointer-events:none; transition:opacity 0.2s; z-index:400;
+}
+#toast.show { opacity:1; }
+#info-box {
+  display:none; position:fixed; top:53px; right:12px; z-index:90;
+  background:rgba(15,23,42,0.95); border:1px solid #1e293b; border-radius:0.5rem;
+  padding:0.75rem 1rem; min-width:200px; max-width:260px;
+  backdrop-filter:blur(8px);
+}
+#info-box.visible { display:block; }
+#info-box-color { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
+#info-box-title { font-size:0.75rem; font-weight:600; color:#e2e8f0; margin-bottom:0.375rem; }
+#info-box-meta { font-size:0.65rem; color:#64748b; line-height:1.6; }
+#info-box-actions { margin-top:0.5rem; display:flex; gap:0.375rem; }
+#info-box-actions .btn { font-size:0.625rem; padding:0.25rem 0.5rem; }
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <h1>⬡ DIAGRAM</h1>
+  <div class="sep"></div>
+  <button class="btn" id="btn-add-component">+ Componente</button>
+  <button class="btn" id="btn-add-note">+ Nota</button>
+  <button class="btn" id="btn-connect">⤳ Relazione</button>
+  <div class="sep"></div>
+  <button class="btn danger" id="btn-delete" style="display:none">✕ Elimina</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-snap">⊞ Snap</button>
+  <div class="sep"></div>
+  <button class="btn save" id="btn-save">↓ Salva</button>
+  <button class="btn" id="btn-reset">Reset</button>
+  <span id="status"></span>
+  <span style="margin-left:auto;font-size:0.6rem;color:#334155;flex-shrink:0">v1.0</span>
+</div>
+<canvas id="canvas"></canvas>
+<div id="modal-overlay">
+  <div id="modal">
+    <h2 id="modal-title">Aggiungi Componente</h2>
+    <div class="field">
+      <label id="label-main">Nome</label>
+      <input type="text" id="modal-label" placeholder="es. FastAPI Backend">
+    </div>
+    <div class="field" id="field-color">
+      <label>Colore</label>
+      <div class="color-row" id="color-row"></div>
+    </div>
+    <div class="field" id="field-note-text" style="display:none">
+      <label>Testo nota</label>
+      <textarea id="modal-note-text" placeholder="Note, TODO, osservazioni..."></textarea>
+    </div>
+    <div class="field" id="field-edge-label" style="display:none">
+      <label>Etichetta relazione</label>
+      <input type="text" id="modal-edge-label" placeholder="es. REST/WS, tools, notify...">
+    </div>
+    <div class="modal-actions">
+      <button class="btn" id="modal-cancel">Annulla</button>
+      <button class="btn active" id="modal-ok">Aggiungi</button>
+    </div>
+  </div>
+</div>
+<div id="info-box">
+  <div id="info-box-title"><span id="info-box-color"></span><span id="info-box-name"></span></div>
+  <div id="info-box-meta"></div>
+  <div id="info-box-actions">
+    <button class="btn" id="info-edit">✎ Modifica</button>
+    <button class="btn danger" id="info-delete">✕</button>
+  </div>
+</div>
+<div id="ctx-menu">
+  <button class="ctx-item" id="ctx-edit">✎ Rinomina</button>
+  <button class="ctx-item red" id="ctx-delete">✕ Elimina</button>
+</div>
+<div id="toast"></div>
+<script>
+const COLORS = ['#22d3ee','#34d399','#818cf8','#a78bfa','#fb7185','#fb923c','#fbbf24','#38bdf8','#f472b6','#94a3b8'];
+const NODE_W=160, NODE_H=54, NOTE_W=180, NOTE_H=70;
+const STORAGE_KEY='canvas_diagram_v1';
+
+let nodes=[], edges=[];
+let pan={x:80,y:60}, zoom=1;
+let selected=null, dragging=null, panning=false, panStart={x:0,y:0};
+let connectMode=false, connectFrom=null;
+let dpr=window.devicePixelRatio||1;
+
+const canvas=document.getElementById('canvas');
+const ctx=canvas.getContext('2d');
+
+function resize(){
+  dpr=window.devicePixelRatio||1;
+  const w=window.innerWidth, h=window.innerHeight-41;
+  canvas.style.width=w+'px'; canvas.style.height=h+'px';
+  canvas.width=w*dpr; canvas.height=h*dpr;
+  render();
+}
+window.addEventListener('resize',resize);
+
+function screenToWorld(sx,sy){
+  const r=canvas.getBoundingClientRect();
+  return {x:(sx-r.left-pan.x)/zoom, y:(sy-r.top-pan.y)/zoom};
+}
+
+function nodeAt(wx,wy){
+  for(let i=nodes.length-1;i>=0;i--){
+    const n=nodes[i];
+    if(wx>=n.x&&wx<=n.x+n.w&&wy>=n.y&&wy<=n.y+n.h) return n;
+  }
+  return null;
+}
+
+function edgeNear(wx,wy){
+  const T=Math.max(10, 16/zoom);
+  for(let i=edges.length-1;i>=0;i--){
+    const e=edges[i];
+    const s=nodes.find(n=>n.id===e.from), d=nodes.find(n=>n.id===e.to);
+    if(!s||!d) continue;
+    const pts=bezPts(s,d);
+    for(let t=0;t<=1;t+=0.02){
+      const p=cubicB(pts,t);
+      if(Math.hypot(p.x-wx,p.y-wy)<T) return e;
+    }
+  }
+  return null;
+}
+
+function borderPt(n,fx,fy){
+  const cx=n.x+n.w/2, cy=n.y+n.h/2;
+  const dx=fx-cx, dy=fy-cy;
+  if(!dx&&!dy) return {x:cx,y:cy};
+  const hw=n.w/2+2, hh=n.h/2+2;
+  const sx=hw/Math.abs(dx||1e-9), sy=hh/Math.abs(dy||1e-9);
+  const sc=Math.min(sx,sy);
+  return {x:cx+dx*sc, y:cy+dy*sc};
+}
+
+function bezPts(s,d){
+  const sx=s.x+s.w/2, sy=s.y+s.h/2;
+  const dx=d.x+d.w/2, dy=d.y+d.h/2;
+  const p0=borderPt(s,dx,dy), p3=borderPt(d,sx,sy);
+  const off=Math.min(Math.max(Math.hypot(dx-sx,dy-sy)*0.4,40),120);
+  const a0=Math.atan2(sy-dy,sx-dx)+Math.PI;
+  const a3=Math.atan2(dy-sy,dx-sx)+Math.PI;
+  return {p0,p3,
+    p1:{x:p0.x+Math.cos(a0)*off, y:p0.y+Math.sin(a0)*off},
+    p2:{x:p3.x+Math.cos(a3)*off, y:p3.y+Math.sin(a3)*off}};
+}
+
+function cubicB({p0,p1,p2,p3},t){
+  const m=1-t;
+  return {x:m*m*m*p0.x+3*m*m*t*p1.x+3*m*t*t*p2.x+t*t*t*p3.x,
+          y:m*m*m*p0.y+3*m*m*t*p1.y+3*m*t*t*p2.y+t*t*t*p3.y};
+}
+
+function render(){
+  const W=canvas.width/dpr, H=canvas.height/dpr;
+  ctx.save(); ctx.scale(dpr,dpr);
+  ctx.fillStyle='#020617'; ctx.fillRect(0,0,W,H);
+  drawGrid(W,H);
+  ctx.save(); ctx.translate(pan.x,pan.y); ctx.scale(zoom,zoom);
+  edges.forEach(drawEdge);
+  nodes.forEach(drawNode);
+  ctx.restore(); ctx.restore();
+}
+
+function drawGrid(W,H){
+  const sp=32*zoom;
+  const ox=((pan.x%sp)+sp)%sp, oy=((pan.y%sp)+sp)%sp;
+  ctx.fillStyle='rgba(30,41,59,0.55)';
+  for(let x=ox;x<W;x+=sp) for(let y=oy;y<H;y+=sp) ctx.fillRect(x-1,y-1,2,2);
+}
+
+function rrect(c,x,y,w,h,r){
+  c.beginPath();
+  c.moveTo(x+r,y); c.lineTo(x+w-r,y); c.arcTo(x+w,y,x+w,y+r,r);
+  c.lineTo(x+w,y+h-r); c.arcTo(x+w,y+h,x+w-r,y+h,r);
+  c.lineTo(x+r,y+h); c.arcTo(x,y+h,x,y+h-r,r);
+  c.lineTo(x,y+r); c.arcTo(x,y,x+r,y,r);
+  c.closePath();
+}
+
+function drawNode(n){
+  const isSel=selected&&selected.type==='node'&&selected.id===n.id;
+  const isCS=connectMode&&connectFrom===n.id;
+  ctx.save();
+  if(isSel||isCS){ ctx.shadowColor=isCS?'#fbbf24':n.color; ctx.shadowBlur=18; }
+  ctx.fillStyle=n.type==='note'?'rgba(30,27,6,0.9)':'rgba(15,23,42,0.93)';
+  rrect(ctx,n.x,n.y,n.w,n.h,8); ctx.fill();
+  ctx.strokeStyle=isCS?'#fbbf24':(isSel?'#fff':n.color);
+  ctx.lineWidth=isSel?2:1.5; ctx.globalAlpha=isSel?1:0.8;
+  rrect(ctx,n.x,n.y,n.w,n.h,8); ctx.stroke(); ctx.globalAlpha=1; ctx.shadowBlur=0;
+  if(n.type!=='note'){
+    ctx.fillStyle=n.color; ctx.globalAlpha=0.3;
+    ctx.beginPath(); ctx.moveTo(n.x+8,n.y); ctx.lineTo(n.x+n.w-8,n.y);
+    ctx.arcTo(n.x+n.w,n.y,n.x+n.w,n.y+8,8); ctx.lineTo(n.x+n.w,n.y+4);
+    ctx.lineTo(n.x,n.y+4); ctx.lineTo(n.x,n.y+8);
+    ctx.arcTo(n.x,n.y,n.x+8,n.y,8); ctx.closePath(); ctx.fill(); ctx.globalAlpha=1;
+  }
+  const lines=n.label.split('\n'), lh=14, th=lines.length*lh;
+  const sy2=n.y+n.h/2-th/2+7;
+  lines.forEach((l,i)=>{
+    ctx.fillStyle=i===0&&n.type!=='note'?'#e2e8f0':'#94a3b8';
+    ctx.font=`${i===0&&n.type!=='note'?'600 11px':'400 9.5px'} JetBrains Mono,monospace`;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(l,n.x+n.w/2,sy2+i*lh);
+  });
+  if(n.type==='note'){ ctx.font='12px sans-serif'; ctx.textAlign='left'; ctx.fillText('📝',n.x+6,n.y+14); }
+  ctx.restore();
+}
+
+function drawEdge(e){
+  const s=nodes.find(n=>n.id===e.from), d=nodes.find(n=>n.id===e.to);
+  if(!s||!d) return;
+  const isSel=selected&&selected.type==='edge'&&selected.id===e.id;
+  const pts=bezPts(s,d);
+  ctx.save();
+  ctx.strokeStyle=isSel?'#e2e8f0':'rgba(100,116,139,0.65)';
+  ctx.lineWidth=isSel?2:1.5; ctx.setLineDash(isSel?[]:[5,4]);
+  ctx.beginPath(); ctx.moveTo(pts.p0.x,pts.p0.y);
+  ctx.bezierCurveTo(pts.p1.x,pts.p1.y,pts.p2.x,pts.p2.y,pts.p3.x,pts.p3.y);
+  ctx.stroke(); ctx.setLineDash([]);
+  const pN=cubicB(pts,0.97);
+  const ang=Math.atan2(pts.p3.y-pN.y,pts.p3.x-pN.x), AS=10;
+  ctx.fillStyle=isSel?'#e2e8f0':'rgba(100,116,139,0.85)';
+  ctx.beginPath();
+  ctx.moveTo(pts.p3.x,pts.p3.y);
+  ctx.lineTo(pts.p3.x-AS*Math.cos(ang-0.4),pts.p3.y-AS*Math.sin(ang-0.4));
+  ctx.lineTo(pts.p3.x-AS*Math.cos(ang+0.4),pts.p3.y-AS*Math.sin(ang+0.4));
+  ctx.closePath(); ctx.fill();
+  if(e.label){
+    const mid=cubicB(pts,0.5);
+    ctx.font='9px JetBrains Mono,monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    const lw2=ctx.measureText(e.label).width;
+    ctx.fillStyle='rgba(2,6,23,0.88)'; ctx.fillRect(mid.x-lw2/2-3,mid.y-7,lw2+6,14);
+    ctx.fillStyle=isSel?'#e2e8f0':'#64748b'; ctx.fillText(e.label,mid.x,mid.y);
+  }
+  ctx.restore();
+}
+
+function uid(){ return Math.random().toString(36).slice(2,10); }
+
+function defaultDiagram(){
+  return {
+    nodes:[
+      {id:'n1',type:'component',x:60,  y:200,w:NODE_W,h:NODE_H,label:'Frontend\nReact / Vue',color:'#22d3ee'},
+      {id:'n2',type:'component',x:300, y:100,w:NODE_W,h:NODE_H,label:'API Gateway\n:443',color:'#818cf8'},
+      {id:'n3',type:'component',x:300, y:300,w:NODE_W,h:NODE_H,label:'Auth Service\nJWT / OAuth',color:'#fb7185'},
+      {id:'n4',type:'component',x:540, y:200,w:NODE_W,h:NODE_H,label:'API Server\n:8000',color:'#34d399'},
+      {id:'n5',type:'component',x:780, y:100,w:NODE_W,h:NODE_H,label:'Database\nPostgres',color:'#a78bfa'},
+      {id:'n6',type:'component',x:780, y:300,w:NODE_W,h:NODE_H,label:'Cache\nRedis',color:'#fb923c'},
+      {id:'n7',type:'component',x:780, y:470,w:NODE_W,h:NODE_H,label:'Message Queue\nRabbitMQ',color:'#38bdf8'},
+      {id:'n8',type:'component',x:540, y:420,w:NODE_W,h:NODE_H,label:'Worker\nBackground jobs',color:'#fbbf24'},
+      {id:'n9',type:'note',     x:50,  y:400,w:180,  h:70,    label:'Double-click to edit\nDrag to move',color:'#fbbf24'},
+    ],
+    edges:[
+      {id:'e1',from:'n1',to:'n2',label:'HTTPS'},
+      {id:'e2',from:'n2',to:'n4',label:'proxy'},
+      {id:'e3',from:'n2',to:'n3',label:'auth check'},
+      {id:'e4',from:'n4',to:'n5',label:'SQL'},
+      {id:'e5',from:'n4',to:'n6',label:'cache'},
+      {id:'e6',from:'n4',to:'n7',label:'publish'},
+      {id:'e7',from:'n7',to:'n8',label:'consume'},
+      {id:'e8',from:'n8',to:'n5',label:'write'},
+    ]
+  };
+}
+
+function save(){ localStorage.setItem(STORAGE_KEY,JSON.stringify({nodes,edges})); toast('Salvato ✓'); }
+
+function load(){
+  try {
+    const raw=localStorage.getItem(STORAGE_KEY);
+    if(raw){ const d=JSON.parse(raw); nodes=d.nodes||[]; edges=d.edges||[]; return; }
+  } catch(e){}
+  const d=defaultDiagram(); nodes=d.nodes; edges=d.edges;
+}
+
+function resetDiagram(){
+  if(!confirm('Reset al diagramma di default?')) return;
+  localStorage.removeItem(STORAGE_KEY);
+  const d=defaultDiagram(); nodes=d.nodes; edges=d.edges;
+  selected=null; render();
+}
+
+let toastTimer;
+function toast(msg){
+  const el=document.getElementById('toast'); el.textContent=msg; el.classList.add('show');
+  clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'),2000);
+}
+
+function setSelected(s){
+  selected=s;
+  document.getElementById('btn-delete').style.display=s?'':'none';
+  updateInfoBox(s);
+  render();
+}
+
+function updateInfoBox(s){
+  const box=document.getElementById('info-box');
+  if(!s){ box.classList.remove('visible'); return; }
+  box.classList.add('visible');
+  const colorEl=document.getElementById('info-box-color');
+  const nameEl=document.getElementById('info-box-name');
+  const metaEl=document.getElementById('info-box-meta');
+  if(s.type==='node'){
+    const n=nodes.find(x=>x.id===s.id);
+    if(!n){ box.classList.remove('visible'); return; }
+    colorEl.style.background=n.color;
+    nameEl.textContent=n.label.replace('\n',' · ');
+    const conns=edges.filter(e=>e.from===n.id||e.to===n.id).length;
+    metaEl.textContent=`Tipo: ${n.type}\nRelazioni: ${conns}\nPos: ${Math.round(n.x)}, ${Math.round(n.y)}`;
+  } else {
+    const e=edges.find(x=>x.id===s.id);
+    if(!e){ box.classList.remove('visible'); return; }
+    const src=nodes.find(n=>n.id===e.from), dst=nodes.find(n=>n.id===e.to);
+    colorEl.style.background='#64748b';
+    nameEl.textContent=e.label||'(senza etichetta)';
+    metaEl.textContent=`Da: ${src?.label.split('\n')[0]||'?'}\nA: ${dst?.label.split('\n')[0]||'?'}`;
+  }
+}
+
+document.getElementById('info-edit').addEventListener('click',()=>{
+  if(!selected) return;
+  if(selected.type==='node'){ const n=nodes.find(x=>x.id===selected.id); if(n) openModal(n.type,n); }
+  else { const e=edges.find(x=>x.id===selected.id); if(e) openModal('edge',{...e,_isEdge:true}); }
+});
+document.getElementById('info-delete').addEventListener('click',deleteSelected);
+
+function deleteSelected(){
+  if(!selected) return;
+  if(selected.type==='node'){
+    nodes=nodes.filter(n=>n.id!==selected.id);
+    edges=edges.filter(e=>e.from!==selected.id&&e.to!==selected.id);
+  } else {
+    edges=edges.filter(e=>e.id!==selected.id);
+  }
+  setSelected(null); save();
+}
+
+function toggleConnect(){
+  connectMode=!connectMode; connectFrom=null;
+  document.getElementById('btn-connect').classList.toggle('active',connectMode);
+  canvas.style.cursor=connectMode?'crosshair':'default';
+  setStatus(connectMode?'Click nodo sorgente...':'');
+  render();
+}
+
+function setStatus(msg){
+  document.getElementById('status').textContent=msg||'Pan: drag·Zoom: wheel·DblClick: rinomina·RightClick: opzioni';
+}
+
+let modalMode='component', pendingEdit=null;
+const SNAP_GRID=32;
+
+function snapAll(){
+  nodes.forEach(n=>{
+    n.x=Math.round(n.x/SNAP_GRID)*SNAP_GRID;
+    n.y=Math.round(n.y/SNAP_GRID)*SNAP_GRID;
+  });
+  save(); render(); toast('Snap ✓');
+}
+
+function initSwatches(currentColor){
+  const row=document.getElementById('color-row'); row.innerHTML='';
+  COLORS.forEach((c)=>{
+    const s=document.createElement('div');
+    const isSel=c===(currentColor||COLORS[0]);
+    s.className='color-swatch'+(isSel?' selected':'');
+    s.style.background=c; s.dataset.color=c;
+    s.addEventListener('click',()=>{ row.querySelectorAll('.color-swatch').forEach(x=>x.classList.remove('selected')); s.classList.add('selected'); });
+    row.appendChild(s);
+  });
+}
+
+function selColor(){ const s=document.querySelector('.color-swatch.selected'); return s?s.dataset.color:COLORS[0]; }
+
+function openModal(mode,editTarget=null){
+  modalMode=mode; pendingEdit=editTarget;
+  const isEdge=editTarget&&editTarget._isEdge;
+  const isEdit=!!editTarget;
+
+  document.getElementById('modal-ok').textContent=isEdit?'Salva':'Aggiungi';
+  // Show/hide fields based on mode
+  const mainField=document.getElementById('modal-label').closest('.field');
+  if(mainField) mainField.style.display=isEdge?'none':'';
+  document.getElementById('field-color').style.display=(mode==='note'||isEdge)?'none':'';
+  document.getElementById('field-note-text').style.display=mode==='note'?'':'none';
+  document.getElementById('field-edge-label').style.display=isEdge?'':'none';
+
+  if(isEdge){
+    document.getElementById('modal-title').textContent='Etichetta relazione';
+    document.getElementById('modal-edge-label').value=editTarget.label||'';
+    document.getElementById('modal-overlay').classList.add('open');
+    setTimeout(()=>document.getElementById('modal-edge-label').focus(),50);
+    return;
+  }
+
+  document.getElementById('modal-title').textContent=isEdit?(mode==='note'?'Modifica nota':'Modifica componente'):(mode==='note'?'Aggiungi Nota':'Aggiungi Componente');
+  document.getElementById('modal-label').value=isEdit?editTarget.label.split('\n')[0]:'';
+  document.getElementById('modal-note-text').value=isEdit&&mode==='note'?editTarget.label:'';
+  initSwatches(isEdit?editTarget.color:null);
+  document.getElementById('modal-overlay').classList.add('open');
+  setTimeout(()=>(mode==='note'?document.getElementById('modal-note-text'):document.getElementById('modal-label')).focus(),50);
+}
+
+function closeModal(){ document.getElementById('modal-overlay').classList.remove('open'); pendingEdit=null; }
+
+function submitModal(){
+  if(pendingEdit){
+    if(pendingEdit._isEdge){
+      const lbl=document.getElementById('modal-edge-label').value.trim();
+      const orig=edges.find(e=>e.id===pendingEdit.id);
+      if(orig) orig.label=lbl;
+      save(); render(); closeModal(); return;
+    }
+    // Node edit — update label and color
+    const lbl=modalMode==='note'
+      ?document.getElementById('modal-note-text').value.trim()
+      :document.getElementById('modal-label').value.trim();
+    if(lbl) pendingEdit.label=lbl;
+    if(modalMode!=='note') pendingEdit.color=selColor();
+    save(); render(); closeModal(); return;
+  }
+  const r=canvas.getBoundingClientRect();
+  const cx=(r.width/2-pan.x)/zoom, cy=(r.height/2-pan.y)/zoom;
+  if(modalMode==='note'){
+    const txt=document.getElementById('modal-note-text').value.trim();
+    if(!txt){ closeModal(); return; }
+    nodes.push({id:uid(),type:'note',x:cx-NOTE_W/2,y:cy-NOTE_H/2,w:NOTE_W,h:NOTE_H,label:txt,color:'#fbbf24'});
+  } else {
+    const lbl=document.getElementById('modal-label').value.trim();
+    if(!lbl){ closeModal(); return; }
+    nodes.push({id:uid(),type:'component',x:cx-NODE_W/2,y:cy-NODE_H/2,w:NODE_W,h:NODE_H,label:lbl,color:selColor()});
+  }
+  save(); render(); closeModal();
+}
+
+let ctxTarget=null;
+function showCtx(x,y,target){
+  ctxTarget=target;
+  const m=document.getElementById('ctx-menu');
+  m.style.left=x+'px'; m.style.top=y+'px'; m.classList.add('open');
+  document.getElementById('ctx-edit').style.display=''; // always show edit
+}
+function hideCtx(){ document.getElementById('ctx-menu').classList.remove('open'); ctxTarget=null; }
+
+canvas.addEventListener('mousedown',e=>{
+  hideCtx();
+  if(e.button===1){ e.preventDefault(); return; }
+  const w=screenToWorld(e.clientX,e.clientY);
+  const hit=nodeAt(w.x,w.y);
+  if(e.button===2){
+    const he=!hit?edgeNear(w.x,w.y):null;
+    if(hit){ setSelected({type:'node',id:hit.id}); showCtx(e.clientX,e.clientY,hit); }
+    else if(he){ setSelected({type:'edge',id:he.id}); showCtx(e.clientX,e.clientY,{...he,_isEdge:true}); }
+    return;
+  }
+  if(connectMode){
+    if(hit){
+      if(!connectFrom){ connectFrom=hit.id; setStatus('Click nodo destinazione...'); render(); }
+      else if(connectFrom!==hit.id){
+        if(!edges.find(ex=>ex.from===connectFrom&&ex.to===hit.id))
+          edges.push({id:uid(),from:connectFrom,to:hit.id,label:''});
+        connectFrom=null; setStatus('Relazione aggiunta.'); save(); render();
+      }
+    }
+    return;
+  }
+  if(hit){
+    setSelected({type:'node',id:hit.id});
+    nodes=nodes.filter(n=>n.id!==hit.id); nodes.push(hit);
+    dragging={node:hit,ox:w.x-hit.x,oy:w.y-hit.y};
+    canvas.style.cursor='grabbing';
+  } else {
+    const he=edgeNear(w.x,w.y);
+    if(he) setSelected({type:'edge',id:he.id});
+    else{ setSelected(null); panning=true; panStart={x:e.clientX-pan.x,y:e.clientY-pan.y}; canvas.style.cursor='grabbing'; }
+  }
+});
+
+canvas.addEventListener('mousemove',e=>{
+  if(dragging){ const w=screenToWorld(e.clientX,e.clientY); dragging.node.x=w.x-dragging.ox; dragging.node.y=w.y-dragging.oy; render(); }
+  else if(panning){ pan.x=e.clientX-panStart.x; pan.y=e.clientY-panStart.y; render(); }
+  else if(!connectMode){ const w=screenToWorld(e.clientX,e.clientY); canvas.style.cursor=nodeAt(w.x,w.y)?'grab':'default'; }
+});
+
+canvas.addEventListener('mouseup',()=>{ if(dragging) save(); dragging=null; panning=false; if(!connectMode) canvas.style.cursor='default'; });
+canvas.addEventListener('mouseleave',()=>{ dragging=null; panning=false; });
+
+canvas.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const r=canvas.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const f=e.deltaY<0?1.1:0.9, nz=Math.min(Math.max(zoom*f,0.15),5);
+  pan.x=mx-(mx-pan.x)*(nz/zoom); pan.y=my-(my-pan.y)*(nz/zoom); zoom=nz; render();
+},{passive:false});
+
+canvas.addEventListener('dblclick',e=>{
+  e.preventDefault();
+  const w=screenToWorld(e.clientX,e.clientY);
+  const hit=nodeAt(w.x,w.y);
+  if(hit){ openModal(hit.type,hit); return; }
+  // Use currently selected edge if coords are close enough, or scan
+  let he=edgeNear(w.x,w.y);
+  if(!he && selected && selected.type==='edge'){
+    he=edges.find(x=>x.id===selected.id)||null;
+  }
+  if(he) openModal('edge',{...he,_isEdge:true});
+});
+canvas.addEventListener('contextmenu',e=>e.preventDefault());
+
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA') return;
+  if(e.key==='Delete'||e.key==='Backspace') deleteSelected();
+  if(e.key==='Escape'){ if(connectMode) toggleConnect(); setSelected(null); hideCtx(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==='s'){ e.preventDefault(); save(); }
+});
+
+document.getElementById('btn-add-component').addEventListener('click',()=>openModal('component'));
+document.getElementById('btn-add-note').addEventListener('click',()=>openModal('note'));
+document.getElementById('btn-connect').addEventListener('click',toggleConnect);
+document.getElementById('btn-delete').addEventListener('click',deleteSelected);
+document.getElementById('btn-snap').addEventListener('click',snapAll);
+document.getElementById('btn-save').addEventListener('click',save);
+document.getElementById('btn-reset').addEventListener('click',resetDiagram);
+document.getElementById('modal-cancel').addEventListener('click',closeModal);
+document.getElementById('modal-ok').addEventListener('click',submitModal);
+document.getElementById('modal-label').addEventListener('keydown',e=>{ if(e.key==='Enter') submitModal(); });
+document.getElementById('modal-edge-label').addEventListener('keydown',e=>{ if(e.key==='Enter') submitModal(); });
+document.getElementById('modal-overlay').addEventListener('click',e=>{ if(e.target===document.getElementById('modal-overlay')) closeModal(); });
+document.getElementById('ctx-edit').addEventListener('click',()=>{
+  if(!ctxTarget) return;
+  hideCtx();
+  if(ctxTarget._isEdge) openModal('edge', ctxTarget);
+  else openModal(ctxTarget.type||'component', ctxTarget);
+});
+document.getElementById('ctx-delete').addEventListener('click',()=>{
+  if(!ctxTarget) return;
+  if(ctxTarget._isEdge||ctxTarget.type==='edge'){ edges=edges.filter(e=>e.id!==ctxTarget.id); }
+  else { nodes=nodes.filter(n=>n.id!==ctxTarget.id); edges=edges.filter(e=>e.from!==ctxTarget.id&&e.to!==ctxTarget.id); }
+  hideCtx(); setSelected(null); save(); render();
+});
+document.addEventListener('click',e=>{ if(!document.getElementById('ctx-menu').contains(e.target)) hideCtx(); });
+
+load(); resize(); setStatus();
+</script>
+</body>
+</html>
