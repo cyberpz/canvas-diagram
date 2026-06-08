@@ -12,6 +12,7 @@ body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; ov
   background:rgba(2,6,23,0.92); border-bottom:1px solid #1e293b;
   backdrop-filter:blur(8px);
   display:flex; align-items:center; gap:0.5rem; padding:0.5rem 1rem;
+  flex-wrap:wrap;
 }
 #toolbar h1 { font-size:0.875rem; font-weight:700; color:#22d3ee; margin-right:0.5rem; flex-shrink:0; }
 .sep { width:1px; height:24px; background:#1e293b; margin:0 0.25rem; }
@@ -26,7 +27,8 @@ body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; ov
 .btn.danger { background:rgba(251,113,133,0.1); color:#fb7185; border-color:rgba(251,113,133,0.3); }
 .btn.save { background:rgba(52,211,153,0.1); color:#34d399; border-color:rgba(52,211,153,0.3); }
 .btn.save:hover { background:rgba(52,211,153,0.2); }
-#status { margin-left:auto; font-size:0.65rem; color:#475569; }
+.btn:disabled { opacity:0.35; cursor:default; }
+#status { font-size:0.65rem; color:#475569; }
 #canvas { display:block; cursor:default; margin-top:41px; }
 #modal-overlay {
   display:none; position:fixed; inset:0; z-index:200;
@@ -82,7 +84,7 @@ body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; ov
 #info-box.visible { display:block; }
 #info-box-color { width:10px; height:10px; border-radius:50%; display:inline-block; margin-right:6px; vertical-align:middle; }
 #info-box-title { font-size:0.75rem; font-weight:600; color:#e2e8f0; margin-bottom:0.375rem; }
-#info-box-meta { font-size:0.65rem; color:#64748b; line-height:1.6; }
+#info-box-meta { font-size:0.65rem; color:#64748b; line-height:1.6; white-space:pre; }
 #info-box-actions { margin-top:0.5rem; display:flex; gap:0.375rem; }
 #info-box-actions .btn { font-size:0.625rem; padding:0.25rem 0.5rem; }
 </style>
@@ -99,11 +101,19 @@ body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; ov
   <button class="btn danger" id="btn-delete" style="display:none">✕ Delete</button>
   <div class="sep"></div>
   <button class="btn" id="btn-snap">⊞ Snap</button>
+  <button class="btn" id="btn-fit">⊡ Fit</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-undo" disabled>↩ Undo</button>
+  <button class="btn" id="btn-redo" disabled>↷ Redo</button>
+  <div class="sep"></div>
+  <button class="btn" id="btn-export-png">↓ PNG</button>
+  <button class="btn" id="btn-export-json">↓ JSON</button>
+  <button class="btn" id="btn-import-json">↑ JSON</button>
   <div class="sep"></div>
   <button class="btn save" id="btn-save">↓ Save</button>
   <button class="btn" id="btn-reset">Reset</button>
   <span id="status"></span>
-  <span style="margin-left:auto;font-size:0.6rem;color:#334155;flex-shrink:0">v2.3</span>
+  <span style="margin-left:auto;font-size:0.6rem;color:#334155;flex-shrink:0">v2.4</span>
 </div>
 <canvas id="canvas"></canvas>
 <div id="modal-overlay">
@@ -123,7 +133,7 @@ body { background:#020617; font-family:'JetBrains Mono',monospace,sans-serif; ov
     </div>
     <div class="field" id="field-edge-label" style="display:none">
       <label>Relation label</label>
-      <input type="text" id="modal-edge-label" placeholder="e.g. REST/WS, tools, notify...">
+      <input type="text" id="modal-edge-label" placeholder="e.g. REST/WS, HTTP, gRPC...">
     </div>
     <div class="modal-actions">
       <button class="btn" id="modal-cancel">Cancel</button>
@@ -153,11 +163,72 @@ let nodes=[], edges=[], groups=[];
 let pan={x:80,y:60}, zoom=1;
 let selected=null, dragging=null, panning=false, panStart={x:0,y:0};
 let resizing=null;
-let multiSelected=new Set(); // node ids
-let selBox=null; // {x,y,w,h} in world coords — rubber band
+let multiSelected=new Set();
+let selBox=null;
 let connectMode=false, connectFrom=null;
 let dpr=window.devicePixelRatio||1;
 
+// ── History (Undo/Redo) ───────────────────────────────────────
+const MAX_HISTORY=50;
+let history=[], future=[];
+let clipboard=null;
+
+function snapshot(){ return JSON.parse(JSON.stringify({nodes,edges,groups})); }
+
+function pushHistory(){
+  history.push(snapshot());
+  if(history.length>MAX_HISTORY) history.shift();
+  future=[];
+  updateHistoryButtons();
+}
+
+function undo(){
+  if(!history.length) return;
+  future.push(snapshot());
+  const s=history.pop();
+  nodes=s.nodes; edges=s.edges; groups=s.groups;
+  setSelected(null); save(); render(); toast('Undo ↩'); updateHistoryButtons();
+}
+
+function redo(){
+  if(!future.length) return;
+  history.push(snapshot());
+  const s=future.pop();
+  nodes=s.nodes; edges=s.edges; groups=s.groups;
+  setSelected(null); save(); render(); toast('Redo ↷'); updateHistoryButtons();
+}
+
+function updateHistoryButtons(){
+  document.getElementById('btn-undo').disabled=!history.length;
+  document.getElementById('btn-redo').disabled=!future.length;
+}
+
+// ── Clipboard (Copy/Paste) ────────────────────────────────────
+function copySelected(){
+  let toCopy=[];
+  if(multiSelected.size>0){
+    toCopy=nodes.filter(n=>multiSelected.has(n.id));
+  } else if(selected&&selected.type==='node'){
+    const n=nodes.find(x=>x.id===selected.id);
+    if(n) toCopy=[n];
+  }
+  if(!toCopy.length) return;
+  clipboard=toCopy.map(n=>({...n}));
+  toast(`Copied ${clipboard.length} node(s)`);
+}
+
+function pasteClipboard(){
+  if(!clipboard||!clipboard.length) return;
+  pushHistory();
+  const newNodes=clipboard.map(n=>({...n,id:uid(),x:n.x+24,y:n.y+24}));
+  nodes.push(...newNodes);
+  multiSelected=new Set(newNodes.map(n=>n.id));
+  setSelected(null);
+  clipboard=newNodes.map(n=>({...n}));
+  save(); render(); toast('Pasted');
+}
+
+// ── Canvas ────────────────────────────────────────────────────
 const canvas=document.getElementById('canvas');
 const ctx=canvas.getContext('2d');
 
@@ -234,11 +305,7 @@ function render(){
   ctx.save(); ctx.translate(pan.x,pan.y); ctx.scale(zoom,zoom);
   groups.forEach(drawGroup);
   edges.forEach(drawEdge);
-  nodes.forEach(n=>{
-    const isMSel=multiSelected.has(n.id);
-    drawNode(n, isMSel);
-  });
-  // Rubber-band selection box
+  nodes.forEach(n=>{ drawNode(n, multiSelected.has(n.id)); });
   if(selBox){
     ctx.save();
     ctx.strokeStyle='rgba(34,211,238,0.8)'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
@@ -255,16 +322,13 @@ const AREA_TITLE_H=22;
 function drawGroup(g){
   const isSel=selected&&selected.type==='group'&&selected.id===g.id;
   ctx.save();
-  // Fill
   ctx.fillStyle=hexAlpha(g.color,0.06);
   rrect(ctx,g.x,g.y,g.w,g.h,10); ctx.fill();
-  // Dashed border
   ctx.strokeStyle=isSel?g.color:hexAlpha(g.color,0.55);
   ctx.lineWidth=isSel?2:1.5;
   ctx.setLineDash([8,5]);
   rrect(ctx,g.x,g.y,g.w,g.h,10); ctx.stroke();
   ctx.setLineDash([]);
-  // Title bar background
   ctx.fillStyle=hexAlpha(g.color,0.15);
   ctx.beginPath();
   ctx.moveTo(g.x+10,g.y); ctx.lineTo(g.x+g.w-10,g.y);
@@ -274,12 +338,10 @@ function drawGroup(g){
   ctx.lineTo(g.x,g.y+10);
   ctx.arcTo(g.x,g.y,g.x+10,g.y,10);
   ctx.closePath(); ctx.fill();
-  // Title text
   ctx.fillStyle=isSel?'#e2e8f0':hexAlpha(g.color,0.9);
   ctx.font='600 11px JetBrains Mono,monospace';
   ctx.textAlign='left'; ctx.textBaseline='middle';
   ctx.fillText(g.label, g.x+10, g.y+AREA_TITLE_H/2);
-  // Resize handle (SE corner)
   const hx=g.x+g.w-8, hy=g.y+g.h-8;
   ctx.fillStyle=isSel?g.color:hexAlpha(g.color,0.4);
   ctx.beginPath(); ctx.arc(hx,hy,4,0,Math.PI*2); ctx.fill();
@@ -410,7 +472,7 @@ function defaultDiagram(){
       {id:'e9', from:'n9',to:'n10',label:'upload'},
     ],
     groups:[
-      {id:'g1',x:700,y:40,w:200,h:450,label:'External Services',color:'#818cf8'},
+      {id:'g1',x:700,y:40,w:210,h:460,label:'External Services',color:'#818cf8'},
     ]
   };
 }
@@ -426,10 +488,66 @@ function load(){
 }
 
 function resetDiagram(){
-  if(!confirm('Reset al diagramma di default?')) return;
+  if(!confirm('Reset to default diagram?')) return;
+  pushHistory();
   localStorage.removeItem(STORAGE_KEY);
   const d=defaultDiagram(); nodes=d.nodes; edges=d.edges; groups=d.groups||[];
   selected=null; render();
+}
+
+// ── Zoom to fit ───────────────────────────────────────────────
+function zoomFit(){
+  const all=[...nodes, ...groups];
+  if(!all.length) return;
+  let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+  all.forEach(n=>{
+    minX=Math.min(minX,n.x); minY=Math.min(minY,n.y);
+    maxX=Math.max(maxX,n.x+(n.w||0)); maxY=Math.max(maxY,n.y+(n.h||0));
+  });
+  const pad=60;
+  const W=canvas.clientWidth, H=canvas.clientHeight;
+  const dw=maxX-minX||1, dh=maxY-minY||1;
+  zoom=Math.min((W-pad*2)/dw, (H-pad*2)/dh, 2);
+  pan.x=pad-minX*zoom+(W-pad*2-dw*zoom)/2;
+  pan.y=pad-minY*zoom+(H-pad*2-dh*zoom)/2;
+  render();
+}
+
+// ── Export PNG ────────────────────────────────────────────────
+function exportPNG(){
+  const link=document.createElement('a');
+  link.download='diagram.png';
+  link.href=canvas.toDataURL('image/png');
+  link.click();
+}
+
+// ── Export/Import JSON ────────────────────────────────────────
+function exportJSON(){
+  const data=JSON.stringify({nodes,edges,groups},null,2);
+  const blob=new Blob([data],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const link=document.createElement('a');
+  link.download='diagram.json'; link.href=url; link.click();
+  URL.revokeObjectURL(url);
+}
+
+function importJSON(){
+  const input=document.createElement('input');
+  input.type='file'; input.accept='.json';
+  input.addEventListener('change',e=>{
+    const file=e.target.files[0]; if(!file) return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try {
+        pushHistory();
+        const d=JSON.parse(ev.target.result);
+        nodes=d.nodes||[]; edges=d.edges||[]; groups=d.groups||[];
+        setSelected(null); save(); render(); toast('JSON imported ✓');
+      } catch{ toast('JSON import error'); }
+    };
+    reader.readAsText(file);
+  });
+  input.click();
 }
 
 let toastTimer;
@@ -464,7 +582,7 @@ function updateInfoBox(s){
     colorEl.style.background=n.color;
     nameEl.textContent=n.label.replace('\n',' · ');
     const conns=edges.filter(e=>e.from===n.id||e.to===n.id).length;
-    metaEl.textContent=`Type: ${n.type}\nRelations: ${conns}\nPos: ${Math.round(n.x)}, ${Math.round(n.y)}`;
+    metaEl.textContent=`Type: ${n.type}\nEdges: ${conns}\nPos: ${Math.round(n.x)}, ${Math.round(n.y)}`;
   } else {
     const e=edges.find(x=>x.id===s.id);
     if(!e){ box.classList.remove('visible'); return; }
@@ -485,6 +603,7 @@ document.getElementById('info-delete').addEventListener('click',deleteSelected);
 
 function deleteSelected(){
   if(!selected) return;
+  pushHistory();
   if(selected.type==='node'){
     nodes=nodes.filter(n=>n.id!==selected.id);
     edges=edges.filter(e=>e.from!==selected.id&&e.to!==selected.id);
@@ -500,18 +619,19 @@ function toggleConnect(){
   connectMode=!connectMode; connectFrom=null;
   document.getElementById('btn-connect').classList.toggle('active',connectMode);
   canvas.style.cursor=connectMode?'crosshair':'default';
-  setStatus(connectMode?'Click nodo sorgente...':'');
+  setStatus(connectMode?'Click source node...':'');
   render();
 }
 
 function setStatus(msg){
-  document.getElementById('status').textContent=msg||'Pan: drag·Zoom: wheel·DblClick: rename·RightClick: options';
+  document.getElementById('status').textContent=msg||'Pan: drag · Zoom: wheel · DblClick: rename · RightClick: options · Ctrl+Z/Y: undo/redo · Ctrl+C/V: copy/paste';
 }
 
 let modalMode='component', pendingEdit=null;
 const SNAP_GRID=32;
 
 function snapAll(){
+  pushHistory();
   nodes.forEach(n=>{
     n.x=Math.round(n.x/SNAP_GRID)*SNAP_GRID;
     n.y=Math.round(n.y/SNAP_GRID)*SNAP_GRID;
@@ -539,7 +659,6 @@ function openModal(mode,editTarget=null){
   const isEdit=!!editTarget;
 
   document.getElementById('modal-ok').textContent=isEdit?'Save':'Add';
-  // Show/hide fields based on mode
   const mainField=document.getElementById('modal-label').closest('.field');
   if(mainField) mainField.style.display=isEdge?'none':'';
   document.getElementById('field-color').style.display=(mode==='note'||isEdge)?'none':'';
@@ -570,19 +689,20 @@ function submitModal(){
     if(pendingEdit._isEdge){
       const lbl=document.getElementById('modal-edge-label').value.trim();
       const orig=edges.find(e=>e.id===pendingEdit.id);
-      if(orig) orig.label=lbl;
+      if(orig){ pushHistory(); orig.label=lbl; }
       save(); render(); closeModal(); return;
     }
-    // Node/area edit
     const lbl=modalMode==='note'
       ?document.getElementById('modal-note-text').value.trim()
       :document.getElementById('modal-label').value.trim();
+    pushHistory();
     if(lbl) pendingEdit.label=lbl;
     if(modalMode!=='note') pendingEdit.color=selColor();
     save(); render(); closeModal(); return;
   }
   const r=canvas.getBoundingClientRect();
   const cx=(r.width/2-pan.x)/zoom, cy=(r.height/2-pan.y)/zoom;
+  pushHistory();
   if(modalMode==='area'){
     const lbl=document.getElementById('modal-label').value.trim();
     if(!lbl){ closeModal(); return; }
@@ -606,7 +726,7 @@ function showCtx(x,y,target){
   ctxTarget=target;
   const m=document.getElementById('ctx-menu');
   m.style.left=x+'px'; m.style.top=y+'px'; m.classList.add('open');
-  document.getElementById('ctx-edit').style.display=''; // always show edit
+  document.getElementById('ctx-edit').style.display='';
 }
 function hideCtx(){ document.getElementById('ctx-menu').classList.remove('open'); ctxTarget=null; }
 
@@ -627,45 +747,47 @@ canvas.addEventListener('mousedown',e=>{
     if(hit){
       if(!connectFrom){ connectFrom=hit.id; setStatus('Click target node...'); render(); }
       else if(connectFrom!==hit.id){
-        if(!edges.find(ex=>ex.from===connectFrom&&ex.to===hit.id))
+        if(!edges.find(ex=>ex.from===connectFrom&&ex.to===hit.id)){
+          pushHistory();
           edges.push({id:uid(),from:connectFrom,to:hit.id,label:''});
+        }
         connectFrom=null; setStatus('Relation added.'); save(); render();
       }
     }
     return;
   }
   if(hit && e.shiftKey){
-    // Shift+click toggles node in multiSelected
     if(multiSelected.has(hit.id)) multiSelected.delete(hit.id);
     else multiSelected.add(hit.id);
     render(); return;
   }
   if(hit && multiSelected.size>0 && multiSelected.has(hit.id)){
-    // Drag all multi-selected
+    pushHistory();
     const offsets=new Map();
     nodes.filter(n=>multiSelected.has(n.id)).forEach(n=>offsets.set(n.id,{ox:w.x-n.x,oy:w.y-n.y}));
     dragging={multi:true,offsets};
     canvas.style.cursor='grabbing';
   } else if(hit){
+    pushHistory();
     multiSelected.clear();
     setSelected({type:'node',id:hit.id});
     nodes=nodes.filter(n=>n.id!==hit.id); nodes.push(hit);
     dragging={node:hit,ox:w.x-hit.x,oy:w.y-hit.y};
     canvas.style.cursor='grabbing';
   } else if(e.shiftKey && !connectMode){
-    // Start rubber-band selection
     selBox={x:w.x,y:w.y,w:0,h:0,sx:w.x,sy:w.y};
     multiSelected.clear(); setSelected(null);
   } else {
-    // Check group resize corner first, then title drag
     const gc=groupCornerAt(w.x,w.y);
     if(gc){
+      pushHistory();
       setSelected({type:'group',id:gc.id});
       resizing={group:gc,ox:w.x,oy:w.y,gx:gc.x,gy:gc.y,gw:gc.w,gh:gc.h};
       canvas.style.cursor='se-resize';
     } else {
       const gt=groupTitleAt(w.x,w.y);
       if(gt){
+        pushHistory();
         setSelected({type:'group',id:gt.id});
         dragging={group:gt,ox:w.x-gt.x,oy:w.y-gt.y};
         canvas.style.cursor='grabbing';
@@ -729,7 +851,6 @@ canvas.addEventListener('dblclick',e=>{
   const w=screenToWorld(e.clientX,e.clientY);
   const hit=nodeAt(w.x,w.y);
   if(hit){ openModal(hit.type,hit); return; }
-  // Use currently selected edge if coords are close enough, or scan
   let he=edgeNear(w.x,w.y);
   if(!he && selected && selected.type==='edge'){
     he=edges.find(x=>x.id===selected.id)||null;
@@ -743,6 +864,10 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Delete'||e.key==='Backspace') deleteSelected();
   if(e.key==='Escape'){ if(connectMode) toggleConnect(); setSelected(null); hideCtx(); }
   if((e.metaKey||e.ctrlKey)&&e.key==='s'){ e.preventDefault(); save(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==='z'){ e.preventDefault(); if(e.shiftKey) redo(); else undo(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==='y'){ e.preventDefault(); redo(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==='c'){ e.preventDefault(); copySelected(); }
+  if((e.metaKey||e.ctrlKey)&&e.key==='v'){ e.preventDefault(); pasteClipboard(); }
 });
 
 document.getElementById('btn-add-component').addEventListener('click',()=>openModal('component'));
@@ -751,6 +876,12 @@ document.getElementById('btn-add-area').addEventListener('click',()=>openModal('
 document.getElementById('btn-connect').addEventListener('click',toggleConnect);
 document.getElementById('btn-delete').addEventListener('click',deleteSelected);
 document.getElementById('btn-snap').addEventListener('click',snapAll);
+document.getElementById('btn-fit').addEventListener('click',zoomFit);
+document.getElementById('btn-undo').addEventListener('click',undo);
+document.getElementById('btn-redo').addEventListener('click',redo);
+document.getElementById('btn-export-png').addEventListener('click',exportPNG);
+document.getElementById('btn-export-json').addEventListener('click',exportJSON);
+document.getElementById('btn-import-json').addEventListener('click',importJSON);
 document.getElementById('btn-save').addEventListener('click',save);
 document.getElementById('btn-reset').addEventListener('click',resetDiagram);
 document.getElementById('modal-cancel').addEventListener('click',closeModal);
@@ -766,6 +897,7 @@ document.getElementById('ctx-edit').addEventListener('click',()=>{
 });
 document.getElementById('ctx-delete').addEventListener('click',()=>{
   if(!ctxTarget) return;
+  pushHistory();
   if(ctxTarget._isEdge){ edges=edges.filter(e=>e.id!==ctxTarget.id); }
   else if(ctxTarget._isGroup){ groups=groups.filter(g=>g.id!==ctxTarget.id); }
   else { nodes=nodes.filter(n=>n.id!==ctxTarget.id); edges=edges.filter(e=>e.from!==ctxTarget.id&&e.to!==ctxTarget.id); }
@@ -773,7 +905,7 @@ document.getElementById('ctx-delete').addEventListener('click',()=>{
 });
 document.addEventListener('click',e=>{ if(!document.getElementById('ctx-menu').contains(e.target)) hideCtx(); });
 
-load(); resize(); setStatus();
+load(); resize(); setStatus(); updateHistoryButtons();
 </script>
 </body>
 </html>
