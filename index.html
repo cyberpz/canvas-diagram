@@ -480,10 +480,6 @@ function defaultDiagram(){
 function save(){ localStorage.setItem(STORAGE_KEY,JSON.stringify({nodes,edges,groups})); toast('Saved ✓'); }
 
 function load(){
-  try {
-    const raw=localStorage.getItem(STORAGE_KEY);
-    if(raw){ const d=JSON.parse(raw); nodes=d.nodes||[]; edges=d.edges||[]; groups=d.groups||[]; return; }
-  } catch(e){}
   const d=defaultDiagram(); nodes=d.nodes; edges=d.edges; groups=d.groups||[];
 }
 
